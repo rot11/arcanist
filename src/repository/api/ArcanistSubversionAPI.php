@@ -15,6 +15,9 @@ final class ArcanistSubversionAPI extends ArcanistRepositoryAPI {
   private $svnBaseRevisionNumber;
   private $statusPaths = array();
 
+  private $changelist;
+  private $workingCopies = array();
+
   public function getSourceControlSystemName() {
     return 'svn';
   }
@@ -66,21 +69,86 @@ final class ArcanistSubversionAPI extends ArcanistRepositoryAPI {
     return $this;
   }
 
+  public function limitStatusToChangelist($changelist){
+    $this->changelist = $changelist;
+    return $this;
+  }
+
+  public function getChangelists(){
+    list($status) = $this->execxLocal('--xml status %Ls', $this->workingCopies);
+
+    $xml = new SimpleXMLElement($status);
+    $result = array();
+
+    foreach($xml as $node){
+      if($node->getName() == "changelist"){
+        $result[] = (string) $node['name'];
+      }
+      else{
+        if($node->getName() != "target") {
+          throw new Exception("Unknown entry type: " . $node->getName());
+        }
+      }
+    }
+    sort($result, SORT_STRING);
+    return array_merge(array('Default'), $result);
+  }
+
+  public function detectNestedWorkingCopies(){
+    list($status) = $this->execxLocal('--xml status');
+
+    $xml = new SimpleXMLElement($status);
+
+    $unversioned = array('./');
+    foreach($xml->target as $target){
+      foreach($target->entry as $entry){
+        $pp = $entry['path'];
+
+        $item  = (string)($entry->{'wc-status'}[0]['item']);
+        $status = $this->parseSVNStatus($item);
+        $svnDir = $this->getPath($pp . DIRECTORY_SEPARATOR . ".svn");
+        if($status == self::FLAG_UNTRACKED && is_dir($this->getPath($pp)) && file_exists($svnDir)) {
+          $unversioned[] = $pp;
+        }
+      }
+    }
+    list($svnInfo) = $this->execxLocal('--xml info %Ls', $unversioned);
+    $svnInfoXml = new SimpleXMLElement($svnInfo);
+
+    $workingCopies = array();
+    foreach($svnInfoXml->entry as $entry) {
+      $wcPath = (string)$entry->{'wc-info'}->{'wcroot-abspath'};
+      $workingCopies[] = $wcPath;
+    }
+    $this->workingCopies = $workingCopies;
+  }
+
   public function getSVNStatus($with_externals = false) {
     if ($this->svnStatus === null) {
       if ($this->statusPaths) {
         list($status) = $this->execxLocal(
           '--xml status %Ls',
           $this->statusPaths);
-      } else {
-        list($status) = $this->execxLocal('--xml status');
+      }
+      elseif ($this->changelist){
+        list($status) = $this->execxLocal('--xml status --cl %s %Ls', $this->changelist, $this->workingCopies);
+      }
+      else {
+        list($status) = $this->execxLocal('--xml status %Ls', $this->workingCopies);
       }
       $xml = new SimpleXMLElement($status);
 
       $externals = array();
       $files = array();
 
-      foreach ($xml->target as $target) {
+      if($this->changelist){
+        $root = $xml->changelist;
+      }
+      else{
+        $root = $xml->target;
+      }
+
+      foreach ($root as $target) {
         $this->svnBaseRevisions = array();
         foreach ($target->entry as $entry) {
           $path = (string)$entry['path'];
@@ -274,7 +342,7 @@ final class ArcanistSubversionAPI extends ArcanistRepositoryAPI {
       // a file has a literal "@" in it, everything after that will be
       // interpreted as a revision. By appending "@" with no argument, SVN
       // parses it properly.
-      return $this->buildLocalFuture(array('info %s@', $this->getPath($path)));
+      return $this->buildLocalFuture(array('info %s@', $path));
     }
   }
 

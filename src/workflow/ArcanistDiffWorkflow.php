@@ -435,6 +435,10 @@ EOTEXT
           'advice'    => pht('%s suppresses lint.', '--head'),
         ),
       ),
+      'cl' => array(
+        'help' => 'Select changelist',
+        'supports' => array('svn')
+      )
     );
 
     return $arguments;
@@ -657,6 +661,10 @@ EOTEXT
       $repository_api->setHeadCommit($head_commit);
     }
 
+    if($repository_api instanceof ArcanistSubversionAPI){
+      $repository_api->detectNestedWorkingCopies();
+    }
+
   }
 
   private function runDiffSetupBasics() {
@@ -678,6 +686,9 @@ EOTEXT
       }
       if ($repository_api instanceof ArcanistSubversionAPI) {
         $repository_api->limitStatusToPaths($this->getArgument('paths'));
+        if($this->getArgument('cl')){
+          $this->selectChangelist();
+        }
       }
       if (!$this->getArgument('head')) {
         $this->requireCleanWorkingCopy();
@@ -859,6 +870,30 @@ EOTEXT
     return $paths;
   }
 
+  protected function selectChangelist(){
+    $repository_api = $this->getRepositoryAPI();
+
+    if($repository_api instanceof ArcanistSubversionAPI){
+      $changelists = $repository_api->getChangelists();
+
+      $msg = "Select changelist from list:\n";
+      $i = 0;
+      foreach($changelists as $changelist){
+        $msg.= "  [$i] $changelist\n";
+        $i++;
+      }
+      $msg .= "Pick changelist by number [0]:";
+
+      $selection = phutil_console_prompt($msg);
+      if  ((int) $selection){
+        $selectedChangeList = $changelists[(int) $selection];
+        $repository_api->limitStatusToChangelist($selectedChangeList);
+      }
+    }
+    else{
+      throw new Exception("Incompatible repository version to select changelist.");
+    }
+  }
 
   protected function generateChanges() {
     $parser = $this->newDiffParser();
